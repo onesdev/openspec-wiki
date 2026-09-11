@@ -122,7 +122,7 @@ python3 <skill_dir>/scripts/wiki_state.py commit <项目路径> \
 
 字段结构的提取口径与降级档位（✅已提取 / ◐结构已知 / ○仅签名 / ✗待补）见 `references/extractors.md`。
 细节与各技术栈的识别方式同样见 `references/extractors.md`。
-改动 `scripts/wiki_state.py` 后请跑 `python3 <skill_dir>/tests/incremental_regression.py [样例项目路径]`（51 条断言，覆盖九类哈希的触发口径与字段结构提取准确性）。
+改动 `scripts/wiki_state.py` 后请跑 `python3 <skill_dir>/tests/incremental_regression.py`（56 条断言，用技能自带的 `tests/fixture/` 最小工程，不依赖任何外部项目；覆盖九类哈希的触发口径与字段结构提取准确性）。
 
 ## 增量机制（为什么不用每次对比内容）
 

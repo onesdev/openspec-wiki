@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
-"""openspec-wiki 九类哈希的增量触发回归测试（纯 CLI，夹具置于 /tmp）。"""
+"""openspec-wiki 回归测试：增量触发口径 + 字段结构提取准确性。
+
+夹具是技能自带的 `tests/fixture/`（小号 FastAPI + 裸 SQLite 工程），
+整份复制到临时目录再改，**不动夹具本体**，也不依赖任何外部项目。
+
+改过 `scripts/wiki_state.py` 就跑一遍：
+
+    python3 tests/incremental_regression.py
+
+全绿则退出码 0，任一断言不过则非 0。断言分两类：
+
+* 甲组（1~10）触发口径——该重生成的必须触发，不该触发的必须不触发。
+  漏触发会让 wiki 静默过期，比误触发危险得多，所以两个方向都要钉。
+* 乙组（11~15）提取准确性——抽出来的字段名 / 类型 / 必填 / 列约束对不对。
+"""
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
-STATE = os.path.expanduser("~/.workbuddy/skills/openspec-wiki/scripts/wiki_state.py")
-DEFAULT_PROJECT = "/Users/jimmy/Desktop/workspace/机考系统/code-exam"
-PROJECT = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PROJECT
-BASE = "/tmp/wiki-regression/fixture"
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATE = os.path.join(HERE, os.pardir, "scripts", "wiki_state.py")
+FIXTURE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "fixture")
+PROJ = os.path.join(tempfile.gettempdir(), "wiki-regression", "proj")
+
 results = []
 t0 = time.time()
 
@@ -29,176 +45,191 @@ def check(name, got, want):
         print("      got  = %r\n      want = %r" % (got, want), flush=True)
 
 
-ign = shutil.ignore_patterns("node_modules", "__pycache__", "dist", ".git")
-proj = os.path.join(BASE, "proj")
-if os.path.isdir(proj):
-    shutil.rmtree(proj)
-os.makedirs(proj)
-shutil.copytree(os.path.join(PROJECT, "openspec"), os.path.join(proj, "openspec"), ignore=ign)
-shutil.copytree(os.path.join(PROJECT, "wiki"), os.path.join(proj, "wiki"), ignore=ign)
-shutil.copytree(os.path.join(PROJECT, "backend"), os.path.join(proj, "backend"), ignore=ign)
-shutil.copytree(os.path.join(PROJECT, "frontend"), os.path.join(proj, "frontend"), ignore=ign)
-for f in ("README.md", "start.sh"):
-    shutil.copy(os.path.join(PROJECT, f), os.path.join(proj, f))
-os.remove(os.path.join(proj, "wiki", ".wiki-manifest.json"))
-print("夹具就绪 [%.0fs]" % (time.time() - t0), flush=True)
+def edit(rel, fn):
+    """读 → 改 → 写回夹具副本里的一份文件。"""
+    path = os.path.join(PROJ, rel)
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(fn(src))
 
-p = run(proj, "plan")
+
+def append(rel, text):
+    with open(os.path.join(PROJ, rel), "a", encoding="utf-8") as f:
+        f.write(text)
+
+
+# ---------------------------------------------------------------- 夹具构建
+
+if not os.path.isfile(os.path.join(FIXTURE, "openspec", "changes", "add-audit-trail",
+                                   "proposal.md")):
+    sys.exit("夹具不完整或路径不对：%s\n"
+             "（期望目录下有 openspec/changes/add-audit-trail/proposal.md；"
+             "也可用第一个参数指定夹具路径）" % FIXTURE)
+
+if os.path.isdir(PROJ):
+    shutil.rmtree(PROJ)
+shutil.copytree(FIXTURE, PROJ, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+print("夹具就绪：%s [%.0fs]" % (PROJ, time.time() - t0), flush=True)
+
+# ---------------------------------------------------------------- 1) 全量起点
+
+p = run(PROJ, "plan")
 check("1  full 模式", p["mode"], "full")
-check("1  七个页面进入待生成清单", p["artifactsToGenerate"],
+check("1  九类页面进入待生成清单", p["artifactsToGenerate"],
       ["README.md", "architecture.md", "decisions.md", "glossary.md",
        "api.md", "data-model.md", "integrations.md", "specs/*.md", "changelog.md"])
-check("1  pendingChanges = 23", len(p["pendingChanges"]), 23)
-check("1  pendingDecisions = 22", len(p["pendingDecisions"]), 22)
+check("1  归档变更数", len(p["pendingChanges"]), 3)
+check("1  决策数", len(p["pendingDecisions"]), 3)
+check("1  能力清单", p["allCapabilities"],
+      ["exam-core", "grading-pipeline", "question-catalog"])
+check("1  进行中变更被单独列出", [c["id"] for c in p["activeChanges"]], ["add-audit-trail"])
 check("1  三类声明页均待生成",
       [p["apiDirty"], p["dataModelDirty"], p["integrationDirty"]], [True, True, True])
-check("1  统计到核心端点与表",
-      [p["stats"]["apiEndpoints"] > 50, p["stats"]["dataTables"] > 10], [True, True])
+check("1  统计到端点与表",
+      [p["stats"]["apiEndpoints"], p["stats"]["dataTables"]], [16, 7])
 
-for fn in ("architecture.md", "decisions.md", "glossary.md", "api.md",
-           "data-model.md", "integrations.md"):
-    open(os.path.join(proj, "wiki", fn), "w").write("# stub\n")
-run(proj, "commit", "--caps", ",".join(p["allCapabilities"]),
+os.makedirs(os.path.join(PROJ, "wiki"), exist_ok=True)
+for fn in ("README.md", "architecture.md", "decisions.md", "glossary.md",
+           "api.md", "data-model.md", "integrations.md"):
+    open(os.path.join(PROJ, "wiki", fn), "w").write("# stub\n")
+# 能力页也要先占位，否则 specs/*.md 永远挂在待生成清单上
+os.makedirs(os.path.join(PROJ, "wiki", "specs"), exist_ok=True)
+for cap in p["allCapabilities"]:
+    open(os.path.join(PROJ, "wiki", "specs", cap + ".md"), "w").write("# stub\n")
+run(PROJ, "commit", "--caps", ",".join(p["allCapabilities"]),
     "--change-ids", ",".join(c["id"] for c in p["pendingChanges"]),
     "--decisions", ",".join(c["id"] for c in p["pendingDecisions"]),
     "--overview", "--architecture", "--glossary", "--api", "--data-model", "--integrations")
 
-p = run(proj, "plan")
+# ---------------------------------------------------------------- 2) 记账后清空
+
+p = run(PROJ, "plan")
 check("2  全量记账后计划为空", p["artifactsToGenerate"], [])
 check("2  各 dirty 标志归零",
       [p["overviewDirty"], p["architectureDirty"], p["glossaryDirty"],
        p["apiDirty"], p["dataModelDirty"], p["integrationDirty"]],
       [False, False, False, False, False, False])
 
+# ---------------------------------------------------------------- 3~7) 触发与不触发
+
 PROBE = '\n\n@router.get("/probe")\ndef probe_endpoint():\n    pass\n'
-exams = os.path.join(proj, "backend", "app", "routers", "exams.py")
-orig = open(exams, encoding="utf-8").read()
-open(exams, "w", encoding="utf-8").write(orig + PROBE)
-p = run(proj, "plan")
+append("backend/app/routers/exams.py", PROBE)
+p = run(PROJ, "plan")
 check("3  新增路由 → apiDirty", p["apiDirty"], True)
-check("3  不影响数据/集成/架构",
+check("3  不影响数据 / 集成 / 架构",
       [p["dataModelDirty"], p["integrationDirty"], p["architectureDirty"]], [False, False, False])
-run(proj, "commit", "--api")
+run(PROJ, "commit", "--api")
 
 # 声明完全不变，只在文件开头插入空行 → 全部行号整体位移
-open(exams, "w", encoding="utf-8").write("\n" + orig + PROBE)
-p = run(proj, "plan")
-check("4  仅行号整体位移 → apiDirty 不触发", p["apiDirty"], False)
+edit("backend/app/routers/exams.py", lambda s: "\n" + s)
+check("4  仅行号整体位移 → apiDirty 不触发", run(PROJ, "plan")["apiDirty"], False)
 
-open(os.path.join(proj, "backend", "selftest_api.py"), "a", encoding="utf-8").write(
-    '\n\n@app.get("/probe-aux")\ndef probe_aux():\n    pass\n')
-p = run(proj, "plan")
-check("5  仅改自测文件 → apiDirty 不触发", p["apiDirty"], False)
+append("backend/selftest_api.py",
+       '\n\n@app.get("/probe-aux")\ndef probe_aux():\n    pass\n')
+check("5  仅改辅助文件 → apiDirty 不触发", run(PROJ, "plan")["apiDirty"], False)
 
-open(os.path.join(proj, "backend", "app", "db.py"), "a", encoding="utf-8").write(
-    "\n\ndef _migrate_v9(conn):\n    conn.execute(\n"
-    "        \"CREATE TABLE IF NOT EXISTS audit_trail(\"\n"
-    "        \" id INTEGER PRIMARY KEY, note TEXT)\")\n")
-p = run(proj, "plan")
+append("backend/app/db.py",
+       "\n\ndef _migrate_v8(conn):\n    conn.execute(\n"
+       "        \"CREATE TABLE IF NOT EXISTS audit_trail(\""
+       " \" id INTEGER PRIMARY KEY, note TEXT)\")\n")
+p = run(PROJ, "plan")
 check("6  新增建表语句 → dataModelDirty", p["dataModelDirty"], True)
-check("6  不影响接口/集成", [p["apiDirty"], p["integrationDirty"]], [False, False])
-run(proj, "commit", "--data-model")
+check("6  不影响接口 / 集成", [p["apiDirty"], p["integrationDirty"]], [False, False])
+run(PROJ, "commit", "--data-model")
 
-open(os.path.join(proj, "backend", "app", "main.py"), "a", encoding="utf-8").write(
-    '\n\nimport redis\n\nredis_client = redis.Redis(host="127.0.0.1", port=6379)\n')
-p = run(proj, "plan")
+append("backend/app/main.py",
+       '\n\nimport redis\n\nredis_client = redis.Redis(host="127.0.0.1", port=6379)\n')
+p = run(PROJ, "plan")
 check("7  引入消息队列 → integrationDirty", p["integrationDirty"], True)
-check("7  不影响接口/数据", [p["apiDirty"], p["dataModelDirty"]], [False, False])
+check("7  不影响接口 / 数据", [p["apiDirty"], p["dataModelDirty"]], [False, False])
 check("7  extract 识别 MQ 使用",
-      run(proj, "extract", "--only", "integrations")["integrations"]["usesMessageQueue"], True)
-run(proj, "commit", "--integrations")
+      run(PROJ, "extract", "--only", "integrations")["integrations"]["usesMessageQueue"], True)
+run(PROJ, "commit", "--integrations")
 
-# --- 请求 / 响应字段结构的增量口径 -----------------------------------------
-p = run(proj, "plan")
-check("8  全部记账后计划为空", p["artifactsToGenerate"], [])
+# ---------------------------------------------------------------- 8~10) 函数体改动的粒度
 
-# 8) 在 handler 体内插入与本接口字段声明无关的语句 → apiDirty 不应触发
-src = open(exams, encoding="utf-8").read()
-open(exams, "w", encoding="utf-8").write(
-    src.replace("def list_exams(me: dict = Depends(GraderDep)):\n",
-                "def list_exams(me: dict = Depends(GraderDep)):\n"
-                "    _audit_log(\"list\")\n"))
-p = run(proj, "plan")
-check("8  函数体内加无关语句 → apiDirty 不触发", p["apiDirty"], False)
+check("8  全部记账后计划为空", run(PROJ, "plan")["artifactsToGenerate"], [])
 
-# 9) 改响应组装辅助函数的返回结构 → apiDirty 应触发（一层内联）
-src = open(exams, encoding="utf-8").read()
-open(exams, "w", encoding="utf-8").write(
-    src.replace('        "created_at": row["created_at"],\n',
-                '        "created_at": row["created_at"],\n'
-                '        "archived": False,\n'))
-p = run(proj, "plan")
+edit("backend/app/routers/exams.py",
+     lambda s: s.replace("def list_exams(me: dict = Depends(GraderDep)):\n",
+                         "def list_exams(me: dict = Depends(GraderDep)):\n"
+                         '    _audit_log("list")\n'))
+check("8  函数体内加无关语句 → apiDirty 不触发", run(PROJ, "plan")["apiDirty"], False)
+
+# 改响应组装辅助函数的返回结构 → 一层内联，应触发
+edit("backend/app/routers/exams.py",
+     lambda s: s.replace('        "created_at": row["created_at"],\n',
+                         '        "created_at": row["created_at"],\n'
+                         '        "archived": False,\n'))
+p = run(PROJ, "plan")
 check("9  辅助函数返回新增字段 → apiDirty", p["apiDirty"], True)
 check("9  不影响数据模型", p["dataModelDirty"], False)
-run(proj, "commit", "--api")
+run(PROJ, "commit", "--api")
 
-# 10) 给 DDL 表加列 → 数据模型触发，且被 `SELECT *` 兜底端点的字段随之变化 → 接口页也触发
-stu = os.path.join(proj, "backend", "app", "routers", "student.py")
-open(stu, "a", encoding="utf-8").write(
-    '\n\n@router.get("/probe-rows")\n'
-    'def probe_rows():\n'
-    '    """SELECT * 兜底探针。"""\n'
-    '    rows = db.query("SELECT * FROM exams")\n'
-    '    return rows\n')
-run(proj, "commit", "--api")
-check("10 探针端点记账后无脏标记", run(proj, "plan")["apiDirty"], False)
+# SELECT * 兜底端点：DDL 加列后它的响应字段随之变化，接口页必须联动触发
+append("backend/app/routers/student.py",
+       '\n\n@router.get("/probe-rows")\n'
+       'def probe_rows():\n'
+       '    """SELECT * 兜底探针。"""\n'
+       '    rows = db.query("SELECT * FROM exams")\n'
+       '    return rows\n')
+run(PROJ, "commit", "--api")
+check("10 探针端点记账后无脏标记", run(PROJ, "plan")["apiDirty"], False)
 
-db = os.path.join(proj, "backend", "app", "db.py")
-src = open(db, encoding="utf-8").read()
-open(db, "w", encoding="utf-8").write(
-    src.replace("        status TEXT NOT NULL CHECK(status IN ('draft','published','closed')),",
-                "        status TEXT NOT NULL CHECK(status IN ('draft','published','closed')),\n"
-                "        remark TEXT,"))
-p = run(proj, "plan")
+edit("backend/app/db.py",
+     lambda s: s.replace(
+         "    status TEXT NOT NULL CHECK(status IN ('draft','published','closed')),",
+         "    status TEXT NOT NULL CHECK(status IN ('draft','published','closed')),\n"
+         "    remark TEXT,"))
+p = run(PROJ, "plan")
 check("10 建表语句加列 → dataModelDirty", p["dataModelDirty"], True)
 check("10 列变化联动接口页（SELECT * 兜底端点）", p["apiDirty"], True)
-run(proj, "commit", "--api", "--data-model")
+run(PROJ, "commit", "--api", "--data-model")
 
-# 11) 字段结构抽取内容断言
-ex = run(proj, "extract", "--only", "api")["api"]
-eps = [e for g in ex["groups"] for e in g["endpoints"]]
-by = {e["handler"]: e for e in eps}
+# ---------------------------------------------------------------- 11) 请求 / 响应字段结构
 
-ce = by.get("create_exam", {})
+ex = run(PROJ, "extract", "--only", "api")["api"]
+ep = {e["handler"]: e for g in ex["groups"] for e in g["endpoints"]}
+
+ce = ep.get("create_exam", {})
 check("11 create_exam 识别请求体参数", ce.get("bodyParam"), "payload")
-check("11 create_exam 请求字段名与类型",
+check("11 create_exam 请求字段名 / 类型 / 必填",
       [(f["name"], f["type"], f["required"]) for f in ce.get("request", [])],
       [("name", "string", True), ("duration_min", "integer", True),
        ("student_count", "integer", True), ("question_ids", "array", False)])
-check("11 create_exam 响应字段来自辅助函数内联",
-      (ce.get("response") or {}).get("source", "").startswith("_exam_public()"),
-      True)
-check("11 create_exam 错误约定被提取",
-      len(ce.get("errors") or []) >= 3, True)
+check("11 create_exam 响应来自辅助函数内联",
+      (ce.get("response") or {}).get("source", "").startswith("_exam_public()"), True)
+check("11 create_exam 错误约定被提取", len(ce.get("errors") or []), 3)
 
-le = by.get("list_exams", {})
+le = ep.get("list_exams", {})
 check("11 数组型响应 kind=array", (le.get("response") or {}).get("kind"), "array")
 check("11 响应字段类型取自 DDL 列",
       (le["response"]["fields"][0]["name"], le["response"]["fields"][0]["type"]),
       ("id", "INTEGER"))
 
-cj = by.get("cancel_job", {})
-check("11 Depends 注入形参不得被当作请求体", cj.get("bodyParam"), "")
+check("11 Depends 注入形参不得被当作请求体",
+      [ep["cancel_job"].get("bodyParam"), ep["job_status"].get("bodyParam")], ["", ""])
 
-gn = by.get("generate", {})
+gn = ep.get("generate", {})
 check("11 async handler 的响应结构被提取",
       (gn.get("response") or {}).get("kind"), "object")
 check("11 async handler 的请求字段被提取",
       [f["name"] for f in gn.get("request", [])], ["prompt"])
 
-# 12) DDL 列抽取保真：名为 key 的列 / 拼接式建表 / 同名示例小表不得覆盖核心表
-open(db, "a", encoding="utf-8").write(
-    "\n\ndef _migrate_v10(conn):\n    conn.execute(\n"
-    '        "CREATE TABLE IF NOT EXISTS audit_trail("'
-    ' " id INTEGER PRIMARY KEY, key TEXT PRIMARY KEY, note TEXT,"'
-    ' " UNIQUE(id, note))")\n'
-    "\n\ndef _example_db(conn):\n"
-    '    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)")\n')
-dm = run(proj, "extract", "--only", "dataModel")["dataModel"]
+# ---------------------------------------------------------------- 12) DDL 列抽取保真
+
+append("backend/app/db.py",
+       "\n\ndef _migrate_v9(conn):\n    conn.execute(\n"
+       "        \"CREATE TABLE IF NOT EXISTS audit_trail(\""
+       " \" id INTEGER PRIMARY KEY, key TEXT PRIMARY KEY, note TEXT,\""
+       " \" UNIQUE(id, note))\")\n"
+       "\n\ndef _example_db(conn):\n"
+       '    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)")\n')
+dm = run(PROJ, "extract", "--only", "dataModel")["dataModel"]
 tbl = {t["name"]: t for t in dm["tables"]}
-check("12 拼接式建表语句的列被解析",
-      [c["name"] for c in tbl["audit_trail"]["columns"]],
-      ["id", "key", "note"])
+check("12 相邻字符串拼接的建表语句列被解析",
+      [c["name"] for c in tbl["audit_trail"]["columns"]], ["id", "key", "note"])
 check("12 名为 key 的列未被当作索引定义丢弃",
       [c["constraints"] for c in tbl["audit_trail"]["columns"] if c["name"] == "key"],
       [["PK"]])
@@ -207,57 +238,62 @@ check("12 表级 UNIQUE 未被当作列",
 check("12 同名示例小表不覆盖核心表列", len(tbl["users"]["columns"]), 9)
 check("12 occurrences 记录各声明列数",
       sorted(o["cols"] for o in tbl["users"]["occurrences"]), [2, 2, 3, 9])
+check("12 只出现在辅助文件的表不进主表清单",
+      ([t["name"] for t in dm["auxiliaryTables"]], len(dm["tables"])), (["selftest_runs"], 8))
 
-# 13) 必填判定口径：多变量 not 守卫 / 枚举 not in 守卫 / is None 守卫；
-#     手握默认值的字段不得因 `if x == "枚举值":` 这类分支被误判必填
+# ---------------------------------------------------------------- 13) 必填判定口径
+
 check("13 多变量 not 守卫 → 相关字段均必填",
-      [(f["name"], f["required"]) for f in by["create_account"]["request"]],
-      [("username", True), ("password", True), ("role", True),
-       ("display_name", False)])
-check("13 有默认值的字段不因枚举分支误判必填",
+      [(f["name"], f["required"]) for f in ep["create_account"]["request"]],
+      [("username", True), ("password", True), ("role", True), ("display_name", False)])
+check("13 有默认值的字段不因内容分支误判必填",
       [(f["name"], f["required"]) for f in gn["request"]], [("prompt", False)])
 check("13 is None 守卫 → 必填",
-      [(f["name"], f["required"]) for f in by["trial_submit"]["request"]],
+      [(f["name"], f["required"]) for f in ep["trial_submit"]["request"]],
       [("lang", False), ("code", True)])
+check("13 not in 枚举守卫 → 必填",
+      [(f["name"], f["required"]) for f in ep["set_exam_status"]["request"]],
+      [("status", True)])
+check("13 内容分支 raise（x == \"sms\"）不得判成必填",
+      [(f["name"], f["required"]) for f in ep["publish_exam"]["request"]],
+      [("notify", False)])
 
-# 14) 响应结构回溯口径
-ex2 = run(proj, "extract", "--only", "api")["api"]
-by2 = {e["handler"]: e for g in ex2["groups"] for e in g["endpoints"]}
+# ---------------------------------------------------------------- 14) 响应结构回溯
+
+by2 = {e["handler"]: e for g in run(PROJ, "extract", "--only", "api")["api"]["groups"]
+       for e in g["endpoints"]}
 check("14 list.append 组装的返回值按实际字段提取",
       [f["name"] for f in by2["my_exams"]["response"]["fields"]],
       ["id", "name", "duration_min", "started"])
 check("14 SELECT * 兜底端点字段随 DDL 加列变化",
       "remark" in [f["name"] for f in by2["probe_rows"]["response"]["fields"]], True)
 check("14 变量经辅助函数组装 + 补字段的响应被还原",
-      [f["name"] for f in by2["get_database"]["response"]["fields"]][:3],
-      ["id", "uid", "name"])
-check("14 本地变量字典字面量 + 补字段的响应被还原",
-      [f["name"] for f in
-       [e for g in ex2["groups"] if g["prefix"] == "/api/questions"
-        for e in g["endpoints"] if e["handler"] == "question_detail"][0]
-       ["response"]["fields"]],
+      [f["name"] for f in by2["get_database"]["response"]["fields"]][:3], ["id", "uid", "name"])
+check("14 局部变量字典字面量 + 补字段的响应被还原",
+      [f["name"] for f in by2["question_detail"]["response"]["fields"]],
       ["id", "title", "type", "files", "referenced", "database_uid", "database_name"])
 check("14 内置资产端点识别为二进制下载",
-      by2["template_pack"]["response"]["kind"], "raw")
+      (by2["template_pack"]["response"] or {}).get("kind"), "raw")
 check("14 无未提取的响应结构",
-      [e["handler"] for g in ex2["groups"] for e in g["endpoints"]
+      [e["handler"] for g in ex["groups"] for e in g["endpoints"]
        if (e.get("response") or {}).get("kind") == "unknown"], [])
 
-# 15) 动态 ALTER 补列清单（(表, 列, 列定义) 三元组）应并入有效列集
-dmx = run(proj, "extract", "--only", "dataModel")["dataModel"]
-tx = {t["name"]: t for t in dmx["tables"]}
+# ---------------------------------------------------------------- 15) 动态补列
+
+tx = {t["name"]: t for t in run(PROJ, "extract", "--only", "dataModel")["dataModel"]["tables"]}
 check("15 补列清单的列并入目标表",
       [(c["name"], c["type"]) for c in tx["questions"]["columns"] if c.get("addedAt")],
       [("database_uid", "TEXT")])
 check("15 补列记录来源位置",
-      [c["addedAt"].rsplit(":", 1)[0] for c in tx["submissions"]["columns"]
-       if c.get("addedAt")],
+      [c["addedAt"].rsplit(":", 1)[0] for c in tx["submissions"]["columns"] if c.get("addedAt")],
       ["backend/app/db.py"])
 check("15 补列清单里的既有列不重复计入",
-      len([c["name"] for c in tx["ai_generate_jobs"]["columns"]]) ==
-      len({c["name"] for c in tx["ai_generate_jobs"]["columns"]}), True)
+      len([c["name"] for c in tx["ai_generate_jobs"]["columns"]]),
+      len({c["name"] for c in tx["ai_generate_jobs"]["columns"]}))
 check("15 补列写入 alterations",
-      sorted({a["column"] for a in dmx["alterations"] if a["action"] == "ADD COLUMN"}),
+      sorted({a["column"] for a in
+              run(PROJ, "extract", "--only", "dataModel")["dataModel"]["alterations"]
+              if a["action"] == "ADD COLUMN"}),
       ["database_uid", "kind", "lang"])
 
 print("\n%d/%d 通过，总耗时 %.0fs" % (sum(results), len(results), time.time() - t0))

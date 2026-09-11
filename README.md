@@ -95,15 +95,19 @@ openspec-wiki/
 │   ├── templates.md          # 9 类页面的模板与写作红线
 │   └── extractors.md         # 声明类提取的模式目录、边界与哈希口径
 └── tests/
-    └── incremental_regression.py   # 51 条断言：九类哈希的增量触发口径 + 字段结构提取准确性
+    ├── incremental_regression.py   # 56 条断言：九类哈希的增量触发口径 + 字段结构提取准确性
+    └── fixture/                    # 自带的最小夹具工程（FastAPI + 裸 SQLite），无需外部项目
+        ├── README.md               # 每个文件压住哪个坑
+        ├── openspec/               # 3 个归档变更 + 1 个进行中变更 + 3 份能力规格
+        └── backend/  frontend/     # 覆盖各种声明写法的源码
 ```
 
 ### 回归测试
 
-改过 `wiki_state.py` 后跑一遍（把夹具项目路径作为唯一参数，默认取一个含 `openspec/` 的样例项目）：
+改过 `wiki_state.py` 后跑一遍。夹具是技能自带的，**不需要任何外部项目**：
 
 ```bash
-python3 <skill_dir>/tests/incremental_regression.py [样例项目路径]
+python3 <skill_dir>/tests/incremental_regression.py
 ```
 
-断言覆盖：全量 / 增量模式切换、行号整体位移与辅助文件改动**不得**触发、新增路由 / 建表语句加列 / 引入 MQ **必须**触发、DDL 加列联动接口页、请求字段名·类型·必填准确性（含多变量 `not` 守卫与枚举分支的区分）、响应结构回溯（dict 字面量 / 局部变量 / `helper()` / `append` / `SELECT` 兜底 / 二进制下载）、DDL 列抽取保真（`key` 列、字符串拼接建表、同名小表不得覆盖核心表、动态补列清单）。
+断言覆盖：全量 / 增量模式切换、行号整体位移与辅助文件改动**不得**触发、新增路由 / 建表语句加列 / 引入 MQ **必须**触发、DDL 加列联动接口页、请求字段名·类型·必填准确性（含多变量 `not` 守卫、`not in` 枚举守卫与纯内容分支的区分）、响应结构回溯（dict 字面量 / 局部变量 / `helper()` / `append` / `SELECT` 兜底 / 二进制下载）、DDL 列抽取保真（`key` 列、字符串拼接建表、同名小表不得覆盖核心表、动态补列清单）。
