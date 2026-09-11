@@ -600,6 +600,10 @@ def _dict_entries(expr):
     """从含对象字面量的表达式中取顶层键值对；无字面量返回 None。"""
     if not expr:
         return None
+    # 先逐行剥注释：`{"a": 1,  # 说明` 若不去注释，切分后下一段以 `#` 开头，
+    # 正则失配会把紧随其后的那个键值对整条吞掉。
+    if "#" in expr:
+        expr = "\n".join(_strip_comment(ln) for ln in expr.split("\n"))
     i, j = _bracket_span(expr, "{", "}")
     if i < 0 or j < 0:
         return None
@@ -619,7 +623,7 @@ def _dict_entries(expr):
 
 def _infer_type(expr):
     """从表达式粗推断类型；推不出返回 any。判断顺序由具体到宽泛。"""
-    e = _clean(expr)
+    e = _clean(_strip_comment(expr))
     if not e:
         return "any"
     if re.search(r"\bint\s*\(", e) or re.fullmatch(r"-?\d+", e):
@@ -929,6 +933,7 @@ def _main_query(body):
 
 def _resp_field_type(raw, col_types, callables):
     """响应字段类型：表达式推断 → 辅助函数返回形状 → `row["col"]` 回落 DDL 列类型。"""
+    raw = _strip_comment(raw)
     t = _infer_type(raw)
     if t != "any":
         return t
@@ -1058,10 +1063,12 @@ def _var_response_shape(var, body, callables, ddl_cols, depth, col_types_all, co
     for om in re.finditer(
             r'(?m)^[ \t]*%s\[[\'"](?P<k>[A-Za-z_]\w*)[\'"]\][ \t]*=[ \t]*(?P<rhs>[^\n]*)'
             % re.escape(var), body or ""):
-        k, krhs = om.group("k"), om.group("rhs").strip()
+        k, krhs = om.group("k"), _strip_comment(om.group("rhs"))
         if any(f["name"] == k for f in base["fields"]):
             continue
-        base["fields"].append({"name": k, "type": _infer_type(krhs), "from": krhs[:70]})
+        base["fields"].append({"name": k,
+                               "type": _resp_field_type(krhs, col_types, callables),
+                               "from": krhs[:70]})
     return base
 
 
@@ -1198,6 +1205,35 @@ def _lineno(text, pos):
 
 def _clean(s):
     return " ".join((s or "").split())
+
+
+def _strip_comment(line):
+    """去掉行尾注释，尊重引号内的 `#`（也跳过转义字符）。
+
+    取到的右值常带注释（`row["script"]   # binary_import 为 None`），
+    不剥掉会让类型推断的整体匹配失配 → 字段类型退化成 any。
+    """
+    buf, quote = [], None
+    i = 0
+    while i < len(line or ""):
+        ch = line[i]
+        if quote:
+            if ch == "\\" and i + 1 < len(line):
+                buf.append(line[i:i + 2])
+                i += 2
+                continue
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+            buf.append(ch)
+        elif ch == "#":
+            break
+        else:
+            buf.append(ch)
+        i += 1
+    return "".join(buf).strip()
 
 
 def is_aux_file(rel):

@@ -48,6 +48,16 @@ python3 <skill_dir>/scripts/wiki_state.py extract <项目路径> [--only api,dat
 | | 端点线索 | URL 字面量 + `*_URL / _ENDPOINT / _HOST / _BASE / _URI` 配置键 |
 | 依赖清单 | 见 `wiki_state.py` 的 `DEP_FILES` | requirements / pyproject / package.json / pom.xml / go.mod / Dockerfile / compose / start.sh 等 |
 
+### 取值表达式的预处理
+
+凡从**源码行**截取右值表达式（请求字段的 `x = payload.get("k")`、响应事后补字段的
+`r["k"] = row["k"]`），一律先剥除行尾注释再判类型，尊重引号内的 `#`。注释会以两种方式污染
+结果，且都不报错：
+
+- 行尾注释混进表达式 → 依赖整体匹配的推断（`row["col"]` 回落 DDL 列类型）失配 → 类型退化成 `any`；
+- 字典字面量里键值对之后的行内注释（`{"a": 1,  # 说明` 换行接下一个键）→ 顶层逗号切分后下一段以 `#` 开头，
+  正则失配会把**紧随其后的那个键值对整条吞掉**，页面上表现为凭空少一个响应字段。
+
 **命中不了怎么办**：该类别在页面上写"未能自动提取（技术栈未覆盖）"+ 待补清单，并在交付说明里明确告知用户。不要用通用推理硬凑接口或表结构。
 
 ### 字段结构的四个降级档

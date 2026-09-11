@@ -18,7 +18,6 @@ def _row_brief(row):
         "id": row["id"],
         "uid": row["uid"],
         "name": row["name"],
-        "script": row["script"],
         "created_at": row["created_at"],
     }
 
@@ -34,6 +33,7 @@ def get_database(db_id: int, me: dict = Depends(AdminDep)):
     row = db.query_one(
         "SELECT id, uid, name, script, created_at FROM databases WHERE id = ?", db_id)
     brief = _row_brief(row)
+    brief["script"] = row["script"]   # 二进制导入为 None，前端显示「外部导入」
     brief["table_count"] = db.count_tables(db_id)
     brief["sample_rows"] = 0
     return brief

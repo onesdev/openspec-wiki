@@ -269,7 +269,13 @@ check("14 SELECT * 兜底端点字段随 DDL 加列变化",
       "remark" in [f["name"] for f in by2["probe_rows"]["response"]["fields"]], True)
 check("14 变量经辅助函数组装 + 补字段的响应被还原",
       [f["name"] for f in by2["get_database"]["response"]["fields"]][:3], ["id", "uid", "name"])
-check("14 局部变量字典字面量 + 补字段的响应被还原",
+check("14 补字段右值带行尾注释时类型仍回落 DDL 列",
+      [f["type"] for f in by2["get_database"]["response"]["fields"] if f["name"] == "script"],
+      ["TEXT"])
+check("14 补字段的来源表达式已剥除行尾注释",
+      [f["from"] for f in by2["get_database"]["response"]["fields"] if f["name"] == "script"],
+      ['row["script"]'])
+check("14 局部变量字典字面量（含行内注释）+ 补字段的响应被还原",
       [f["name"] for f in by2["question_detail"]["response"]["fields"]],
       ["id", "title", "type", "files", "referenced", "database_uid", "database_name"])
 check("14 内置资产端点识别为二进制下载",

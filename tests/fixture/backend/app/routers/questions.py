@@ -35,7 +35,7 @@ def template_pack(me: dict = Depends(AdminDep)):
 def question_detail(qid: int, me: dict = Depends(AdminDep)):
     row = db.query_one("SELECT id, title, type, files FROM questions WHERE id = ?", qid)
     resp = {
-        "id": row["id"],
+        "id": row["id"],      # 主键，前端用作路由参数
         "title": row["title"],
         "type": row["type"],
         "files": row["files"],

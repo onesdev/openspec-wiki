@@ -11,8 +11,8 @@
 | `backend/app/db.py` | 裸 DDL、`CREATE INDEX`、`_ALTER_COLUMNS` 三元组动态补列、Python 相邻字符串字面量拼接的建表语句、`ALTER TABLE ... RENAME` 整表重建 |
 | `backend/app/routers/exams.py` | 裸 `payload: dict` 请求体、`int()` 类型升级、`if not x` / `x <= 0` 守卫判必填、辅助函数 `_exam_public()` 内联出响应、同一函数多个 `HTTPException` |
 | `backend/app/routers/accounts.py` | 多变量 `or` 守卫（`if not a or not b or not c`）、纯枚举分支 `x == "platform_admin"` **不得**算必填、`Depends()` 注入形参**不得**被当成请求体、核心文件里的同名小表 |
-| `backend/app/routers/questions.py` | 局部变量字典字面量 + 事后 `resp["k"] = ...` 补字段、`Response(media_type=...)` 二进制下载 |
-| `backend/app/routers/databases.py` | `brief = _row_brief(row)` 变量经辅助函数组装 + 事后补字段 |
+| `backend/app/routers/questions.py` | 局部变量字典字面量（**含键值对之后的行内注释**）+ 事后 `resp["k"] = ...` 补字段、`Response(media_type=...)` 二进制下载 |
+| `backend/app/routers/databases.py` | `brief = _row_brief(row)` 变量经辅助函数组装 + 事后补字段（**右值带行尾注释**，须回落到 DDL 列类型 `TEXT`） |
 | `backend/app/routers/ai.py` | `async def` 处理函数（漏了会把字段整段丢掉） |
 | `backend/app/routers/student.py` | `out.append({...})` 循环组装数组，且函数体里另有一条 `SELECT *` **不得**盖掉它 |
 | `backend/app/ai_client.py` | 第三方 HTTP 客户端实例化（`httpx.AsyncClient(...)`）与 base_url 常量 |
